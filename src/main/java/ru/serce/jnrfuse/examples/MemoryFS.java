@@ -3,6 +3,8 @@ package ru.serce.jnrfuse.examples;
 
 import jnr.ffi.Platform;
 import jnr.ffi.Pointer;
+import jnr.ffi.provider.jffi.NativeMemoryManager;
+import jnr.ffi.provider.jffi.NativeRuntime;
 import jnr.ffi.types.mode_t;
 import jnr.ffi.types.off_t;
 import jnr.ffi.types.size_t;
@@ -22,6 +24,8 @@ import java.util.List;
 import static jnr.ffi.Platform.OS.WINDOWS;
 
 public class MemoryFS extends FuseStubFS {
+    private final static NativeMemoryManager mm = NativeRuntime.getInstance().getMemoryManager();
+
     private class MemoryDirectory extends MemoryPath {
         private List<MemoryPath> contents = new ArrayList<>();
 
@@ -94,6 +98,8 @@ public class MemoryFS extends FuseStubFS {
 
     private class MemoryFile extends MemoryPath {
         private ByteBuffer contents = ByteBuffer.allocate(0);
+	private int size = 0;
+	private int capacity = contents.capacity();
 
         private MemoryFile(String name) {
             super(name);
@@ -107,7 +113,11 @@ public class MemoryFS extends FuseStubFS {
             super(name);
             try {
                 byte[] contentBytes = text.getBytes("UTF-8");
-                contents = ByteBuffer.wrap(contentBytes);
+		ByteBuffer buf = ByteBuffer.wrap(contentBytes);
+                //contents = Pointer.wrap(NativeRuntime.getInstance(), buf);
+		contents = buf;
+		size = buf.capacity();
+		capacity = buf.capacity();
             } catch (UnsupportedEncodingException e) {
                 // Not going to happen
             }
@@ -116,48 +126,55 @@ public class MemoryFS extends FuseStubFS {
         @Override
         protected void getattr(FileStat stat) {
             stat.st_mode.set(FileStat.S_IFREG | 0777);
-            stat.st_size.set(contents.capacity());
+            stat.st_size.set(size);
             stat.st_uid.set(getContext().uid.get());
             stat.st_gid.set(getContext().gid.get());
         }
 
         private int read(Pointer buffer, long size, long offset) {
-            int bytesToRead = (int) Math.min(contents.capacity() - offset, size);
-            byte[] bytesRead = new byte[bytesToRead];
+            int bytesToRead = (int) Math.min(this.size - offset, size);
+	    //byte[] bytesRead = new byte[bytesToRead];
             synchronized (this) {
-                contents.position((int) offset);
-                contents.get(bytesRead, 0, bytesToRead);
-                buffer.put(0, bytesRead, 0, bytesToRead);
-                contents.position(0); // Rewind
+		// contents.position((int) 0);
+                // contents.get(bytesRead, 0, bytesToRead);
+                // buffer.put(0, bytesRead, 0, bytesToRead);
+		// contents.position(0); // Rewind
+
+		//contents.transferTo(offset, buffer, 0, size);
             }
             return bytesToRead;
         }
 
         private synchronized void truncate(long size) {
-            if (size < contents.capacity()) {
-                // Need to create a new, smaller buffer
-                ByteBuffer newContents = ByteBuffer.allocate((int) size);
-                byte[] bytesRead = new byte[(int) size];
-                contents.get(bytesRead);
-                newContents.put(bytesRead);
-                contents = newContents;
+            if (size < this.size) {
+		// TODO resize the buffer
+		this.size = (int)size;
             }
         }
 
         private int write(Pointer buffer, long bufSize, long writeOffset) {
             int maxWriteIndex = (int) (writeOffset + bufSize);
-            byte[] bytesToWrite = new byte[(int) bufSize];
+	    //byte[] bytesToWrite = new byte[(int) bufSize];
             synchronized (this) {
-                if (maxWriteIndex > contents.capacity()) {
+		/*
+                if (maxWriteIndex > this.capacity) {
                     // Need to create a new, larger buffer
-                    ByteBuffer newContents = ByteBuffer.allocate(maxWriteIndex);
-                    newContents.put(contents);
+		    this.capacity = Math.max(this.size * 2, 1024*1024*1024);
+                    Pointer newContents = mm.allocate(this.capacity);
+		    newContents.transferFrom(0, contents, 0, this.size);
                     contents = newContents;
                 }
-                buffer.get(0, bytesToWrite, 0, (int) bufSize);
-                contents.position((int) writeOffset);
-                contents.put(bytesToWrite);
-                contents.position(0); // Rewind
+		contents.transferFrom(writeOffset, buffer, 0, bufSize);
+		*/
+		
+		// buffer.get(0, bytesToWrite, 0, (int) bufSize);
+                // contents.position((int) 0);
+                // contents.put(bytesToWrite);
+		// contents.position(0); // Rewind
+
+		//Pointer w = Pointer.wrap(NativeRuntime.getInstance(), contents);
+		//w.transferFrom(0, buffer, 0, bufSize);
+		this.size = Math.max(this.size, maxWriteIndex);
             }
             return (int) bufSize;
         }
@@ -214,7 +231,7 @@ public class MemoryFS extends FuseStubFS {
                 default:
                     path = "/tmp/mntm";
             }
-            memfs.mount(Paths.get(path), true, true);
+            memfs.mount(Paths.get(path), true, false, new String[] {"-o", "big_writes", "-o", "max_write=4194304" });
         } finally {
             memfs.umount();
         }
@@ -294,6 +311,8 @@ public class MemoryFS extends FuseStubFS {
 
     @Override
     public int read(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
+	return (int)size;
+	/*
         MemoryPath p = getPath(path);
         if (p == null) {
             return -ErrorCodes.ENOENT();
@@ -302,6 +321,7 @@ public class MemoryFS extends FuseStubFS {
             return -ErrorCodes.EISDIR();
         }
         return ((MemoryFile) p).read(buf, size, offset);
+	*/
     }
 
     @Override
